@@ -1,0 +1,9 @@
+.venv/
+outputs/**/*.pkl
+__pycache__/
+*.pyc
+.DS_Store
+.claude/
+*.pkl
+*.ipynb_checkpoints
+random/
