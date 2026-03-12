@@ -12,7 +12,7 @@ def fit_density_2param(df: pd.DataFrame,
                        n_d_grid: int = 15,
                        n_gamma_grid: int = 8,
                        gamma_range: tuple = (0.0, 2.0),
-                       populations: int = 15,
+                       populations: int = 20,
                        population_size: int = 40,
                        ncycles_per_iteration: int = 100,
                        weight_optimize: float = 0.1,
@@ -24,29 +24,42 @@ def fit_density_2param(df: pd.DataFrame,
                        unary_operators: list | None = None,
                        guesses: list | None = None,
                        fraction_replaced_guesses: float = 0.001,
-                       weight_monotone: float = 0.1,
-                       weight_nonneg: float = 0.01,
-                       n_gamma_refine: int = 10):
+                       weight_spos: float = 0.1,
+                       weight_inner_slope: float = 0.1,
+                       n_d_refine: int = 10,
+                       n_gamma_refine: int = 5):
     """
-    Two-parameter symbolic regression for galaxy rotation curves: learns DM
-    density shape h(x, γ) where x = r/d and γ is a per-galaxy parameter.
+    Two-parameter symbolic regression for galaxy rotation curves: learns the DM
+    logarithmic density slope s(x, γ) = -d ln ρ / d ln r, where x = r/d and γ
+    is a per-galaxy shape parameter.
 
-    Extends fit_density_inner_opt (models/density.py) by adding a second
-    per-galaxy parameter γ optimised on a linear grid alongside scale radius d.
+    The density h(x, γ) is recovered from s by integration:
+        h(x_i) = h(x_1) · exp(-Σ_{k<i} (s_k + s_{k+1})/2 · Δ ln r_k)
+    with h(x_1) = 1 normalised at the innermost data point (the DM amplitude c
+    absorbs the overall scale per galaxy).
+
+    This parameterisation is physically cleaner than learning h directly:
+      - h is guaranteed positive (exp > 0)
+      - Monotonicity (h decreasing) becomes s ≥ 0
+      - Inner-slope constraint (enclosed mass convergence) becomes s(0) < 3
+      - s ∈ [0, 3] for all standard profiles (pISO: s→0 at origin; NFW: s→1)
+
+    pISO target:  s(x) = 2x²/(1 + x²)
+    NFW target:   s(x) = (1 + 3x)/(1 + x)
 
     Model structure (per data point i in galaxy g):
         V²_obs = sign(Vgas)·V²_gas + a[g]·V²_disk + b[g]·V²_bul + c[g]·DM_col[i]
 
-    where the DM column integrates the 2-parameter density shape:
-        DM_col[i] = (1/r_i) · ∫₀^{r_i} h(r'/d[g], γ[g]) · r'² dr'
+    where:
+        DM_col[i] = (1/r_i) · ∫₀^{r_i} h_rec(r'/d[g], γ[g]) · r'² dr'
 
     Per-galaxy parameters:
         a, b  — M/L ratios (solved analytically via WLS/IRLS)
         c     — DM amplitude (solved analytically)
-        d     — scale radius (optimised on n_d_grid log-spaced grid + 20-pt refinement)
-        γ     — galaxy specific parameter
+        d     — scale radius (optimised on n_d_grid log-spaced grid + n_d_refine-pt refinement)
+        γ     — per-galaxy shape parameter
 
-    The SR expression f(#1, #2) has:
+    The SR expression s(#1, #2) has:
         #1 = r/d  (updated per d-iteration)
         #2 = γ    (updated per γ-iteration; overwrites the galaxy-code row in X_eval)
     """
@@ -98,15 +111,14 @@ def fit_density_2param(df: pd.DataFrame,
         gamma_hi = T({gamma_hi})
         n_gamma  = {n_gamma_grid}
 
-        # Physics penalty weights
-        weight_monotone = L({weight_monotone})
-        weight_nonneg   = L({weight_nonneg})
+        # Physics penalty weights (act on s directly, not h)
+        weight_spos        = L({weight_spos})
+        weight_inner_slope = L({weight_inner_slope})
 
-        # Physics test points (fixed x = r/d values; only X_phys[2,:] = γ updated per galaxy)
-        # x=0.01 catches peaks pushed below 0.1 by optimising γ small.
-        n_phys = 6
+        # Physics test points: x=0.001 at front for inner-slope check s(0.001) < 3.
+        n_phys = 7
         X_phys = zeros(T, 5, n_phys)
-        X_phys[1, :] = [T(0.01), T(0.1), T(0.5), T(1.0), T(3.0), T(10.0)]
+        X_phys[1, :] = [T(0.001), T(0.01), T(0.1), T(0.5), T(1.0), T(3.0), T(10.0)]
         X_phys[3, :] .= T(1); X_phys[4, :] .= T(1); X_phys[5, :] .= T(1)
 
         # ---- pre-compute per-galaxy index ranges (data sorted by galaxy_code) ----
@@ -151,7 +163,9 @@ def fit_density_2param(df: pd.DataFrame,
             w_irls      = Vector{{T}}(undef, n_g)
             W_irls_sqrt = Vector{{T}}(undef, n_g)
             resid_irls  = Vector{{T}}(undef, n_g)
-            dm_col      = Vector{{T}}(undef, n_g)
+            dm_col  = Vector{{T}}(undef, n_g)
+            h_g     = Vector{{T}}(undef, n_g)   # density recovered from log-slope
+            log_r_g = log.(r_g)                 # precomputed log(r) for log-space trapz
 
             A[:, 1]   = Vdisk2_g
             A[:, 2]   = Vbul2_g
@@ -167,17 +181,28 @@ def fit_density_2param(df: pd.DataFrame,
                 X_eval[1, :] .= r_g ./ d_val
                 # X_eval[2, :] holds γ — set by caller before invoking this function.
 
-                f_v, fl = eval_tree_array(tree.trees.f, X_eval, options)
+                # s_v[i] = SR expression evaluated at (x_i, γ) = -d ln ρ / d ln r
+                s_v, fl = eval_tree_array(tree.trees.f, X_eval, options)
                 !fl && return L(Inf)
-                any(!isfinite, f_v) && return L(Inf)
+                any(!isfinite, s_v) && return L(Inf)
 
-                cum_I_loc = T(0); prev_fr2 = T(0); prev_r_loc = T(0)
+                # Recover density h from log-slope s via trapz in log-r space:
+                #   ln h(r_i) = ln h(r_1) - integral_{{r_1}}^{{r_i}} s(r'/d) d(ln r')
+                # Normalise h[1] = 1; the DM amplitude c absorbs the overall scale.
+                h_g[1] = T(1)
+                for i in 2:n_g
+                    delta_ln_r = log_r_g[i] - log_r_g[i-1]
+                    h_g[i] = h_g[i-1] * exp(-T(0.5) * (s_v[i-1] + s_v[i]) * delta_ln_r)
+                end
+                any(!isfinite, h_g) && return L(Inf)
+
+                cum_I_loc = T(0); prev_hr2 = T(0); prev_r_loc = T(0)
                 for i in 1:n_g
                     r_i    = r_g[i]
-                    f_r2_i = f_v[i] * r_i * r_i
-                    cum_I_loc  += (f_r2_i + prev_fr2) * T(0.5) * (r_i - prev_r_loc)
+                    h_r2_i = h_g[i] * r_i * r_i
+                    cum_I_loc  += (h_r2_i + prev_hr2) * T(0.5) * (r_i - prev_r_loc)
                     dm_col[i]   = cum_I_loc / r_i
-                    prev_fr2    = f_r2_i
+                    prev_hr2    = h_r2_i
                     prev_r_loc  = r_i
                 end
                 any(!isfinite, dm_col) && return L(Inf)
@@ -265,7 +290,7 @@ def fit_density_2param(df: pd.DataFrame,
             Δlog   = log(T(500.0) / T(0.05)) / ({n_d_grid} - 1)
             lo_ref = max(log(T(0.05)), best_log_d - Δlog)
             hi_ref = min(log(T(500.0)), best_log_d + Δlog)
-            for log_d in range(lo_ref, hi_ref; length=20)
+            for log_d in range(lo_ref, hi_ref; length={n_d_refine})
                 c = eval_candidate_g(log_d)
                 if c < best_g; best_g = c; best_log_d = log_d; end
             end
@@ -286,20 +311,20 @@ def fit_density_2param(df: pd.DataFrame,
             X_eval[2, :] .= best_gamma   # restore
 
             # ---- Physics penalties at optimal (d, γ) ----
-            # Evaluated at 5 fixed x = r/d test points covering the profile range.
-            # Monotonicity penalty penalises h(x[k+1]) > h(x[k]) (non-decreasing density).
-            # Non-negativity penalty penalises h < 0.
-            # Applied after refinement so the penalty reflects the true optimal parameters.
-            if weight_monotone > L(0) || weight_nonneg > L(0)
+            # Evaluated at 7 fixed x = r/d test points.
+            # Slope positivity: penalise s < 0 (density increasing outward).
+            # Inner-slope: penalise s(0.001) > 3 (enclosed mass diverges near origin).
+            # Both act directly on the SR expression s = -d ln ρ / d ln r.
+            if weight_spos > L(0) || weight_inner_slope > L(0)
                 X_phys[2, :] .= best_gamma
-                h_phys, ok_phys = eval_tree_array(tree.trees.f, X_phys, options)
-                if ok_phys && all(isfinite, h_phys)
-                    neg_pen  = sum(max(-v, T(0)) for v in h_phys)
-                    mono_pen = L(0)
-                    for k in 1:n_phys-1
-                        mono_pen += max(h_phys[k+1] - h_phys[k], T(0))
+                s_phys, ok_phys = eval_tree_array(tree.trees.f, X_phys, options)
+                if ok_phys && all(isfinite, s_phys)
+                    if weight_spos > L(0)
+                        best_g += weight_spos * sum(max(-v, T(0)) for v in s_phys)
                     end
-                    best_g += weight_nonneg * neg_pen + weight_monotone * mono_pen
+                    if weight_inner_slope > L(0)
+                        best_g += weight_inner_slope * max(s_phys[1] - L(3), L(0))
+                    end
                 end
             end
 
@@ -314,7 +339,7 @@ def fit_density_2param(df: pd.DataFrame,
     template = TemplateExpressionSpec(
         expressions=["f"],
         variable_names=["r", "gamma", "Vgas2", "Vdisk2", "Vbulge2"],
-        combine="f(r, gamma)",   # display: density shape h(r/d, γ), params recovered post-hoc
+        combine="f(r, gamma)",   # display: log-slope s(r/d, γ); h recovered by integration
     )
 
     # Default operators: include log so the SR can build x^γ via exp(γ·log(x)).
@@ -341,7 +366,7 @@ def fit_density_2param(df: pd.DataFrame,
         binary_operators=["*", "/", "-", "+"],
         unary_operators=_unary,
         nested_constraints=_nested,
-        maxsize=22,
+        maxsize=18,
         populations=populations,
         population_size=population_size,
         ncycles_per_iteration=ncycles_per_iteration,
@@ -456,9 +481,10 @@ if __name__ == "__main__":
         iterations=99999,
         n_galaxies=None,
         n_d_grid=15,
+        n_d_refine=10,
         n_gamma_grid=8,
         gamma_range=(0.0, 2.0),
-        populations=15,
+        populations=20,
         population_size=40,
         ncycles_per_iteration=100,
         weight_optimize=0.1,
@@ -468,7 +494,7 @@ if __name__ == "__main__":
         n_irls=3,
         min_points=5,
         unary_operators=["sqrt", "log", "log1p", "exp"],
-        weight_monotone=0.1,
-        weight_nonneg=0.01,
-        n_gamma_refine=10,
+        weight_spos=0.1,
+        weight_inner_slope=0.1,
+        n_gamma_refine=5,
     )

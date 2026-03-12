@@ -9,22 +9,23 @@ def fit_vr_2param(df: pd.DataFrame,
                   iterations: int = 99999,
                   n_galaxies: int | None = 5,
                   n_d_grid: int = 15,
-                  n_d_refine: int = 20,
+                  n_d_refine: int = 10,
                   n_gamma_grid: int = 8,
-                  n_gamma_refine: int = 10,
+                  n_gamma_refine: int = 5,
                   gamma_range: tuple = (0.0, 2.0),
-                  populations: int = 15,
+                  populations: int = 20,
                   population_size: int = 40,
                   ncycles_per_iteration: int = 100,
                   weight_optimize: float = 0.0,
                   optimizer_iterations: int = 10,
                   upsilon_weight: float = 1.0,
                   origin_weight: float = 1.0,
+                  weight_nonneg: float = 0.01,
                   nu_t: float = 3.0,
                   n_irls: int = 3,
                   min_points: int = 5,
                   unary_operators: list = None,
-                  maxsize: int = 22):
+                  maxsize: int = 18):
     """
     2D symbolic regression: learn f(r/d, γ) where γ is a per-galaxy shape parameter
     optimised jointly with scale radius d.
@@ -92,6 +93,12 @@ def fit_vr_2param(df: pd.DataFrame,
         X_origin = zeros(T, 5, 1)
         X_origin[1, 1] = T(0.001)
         X_origin[3, 1] = T(1); X_origin[4, 1] = T(1); X_origin[5, 1] = T(1)
+
+        # Positivity test points (5×6); row 2 updated per galaxy at best_gamma.
+        n_phys_vel = 6
+        X_phys_vel = zeros(T, 5, n_phys_vel)
+        X_phys_vel[1, :] = [T(0.01), T(0.1), T(0.5), T(1.0), T(3.0), T(10.0)]
+        X_phys_vel[3, :] .= T(1); X_phys_vel[4, :] .= T(1); X_phys_vel[5, :] .= T(1)
 
         # O(n_pts) galaxy index scan (data sorted by galaxy_code in Python).
         g_start = zeros(Int, n_gal)
@@ -244,6 +251,16 @@ def fit_vr_2param(df: pd.DataFrame,
                 end
             end
 
+            # ---- positivity penalty: penalise f < 0 at test points ----
+            if L({weight_nonneg}) > L(0)
+                X_phys_vel[2, :] .= best_gamma
+                f_phys, ok_fphys = eval_tree_array(tree.trees.f, X_phys_vel, options)
+                if ok_fphys && all(isfinite, f_phys)
+                    neg_pen = sum(max(-v, T(0)) for v in f_phys)
+                    best_g += L({weight_nonneg}) * neg_pen
+                end
+            end
+
             isinf(best_g) && (best_g = L(1e12))
             total_loss += best_g
         end
@@ -308,11 +325,11 @@ if __name__ == "__main__":
         iterations=99999,
         n_galaxies=None,
         n_d_grid=15,
-        n_d_refine=20,
+        n_d_refine=10,
         n_gamma_grid=8,
-        n_gamma_refine=10,
+        n_gamma_refine=5,
         gamma_range=(0.0, 2.0),
-        populations=15,
+        populations=20,
         population_size=40,
         ncycles_per_iteration=100,
         weight_optimize=0.1,
@@ -323,5 +340,5 @@ if __name__ == "__main__":
         n_irls=3,
         min_points=5,
         unary_operators=["atan", "log", "sqrt", "log1p"],
-        maxsize=22,
+        maxsize=18,
     )
