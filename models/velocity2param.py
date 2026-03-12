@@ -280,7 +280,7 @@ def fit_vr_2param(df: pd.DataFrame,
         "atan":  {"atan": 0, "log": 0},
         "log":   {"log": 0, "atan": 0, "log1p": 0},
         "log1p": {"log1p": 0},
-        "sqrt":  {"log": 0},
+        "sqrt":  {"sqrt": 0, "log": 0, "atan": 0, "log1p": 0},
     }
     nested = {
         op: {t: d for t, d in targets.items() if t in active_unary}
@@ -321,7 +321,7 @@ if __name__ == "__main__":
     df = produce_SPARC_df("data/SPARC", quality=1)
     fit_vr_2param(
         df,
-        output_directory="outputs/SPARC/stage9_velocity_2param",
+        output_directory="outputs/SPARC/production/velocity",
         iterations=99999,
         n_galaxies=None,
         n_d_grid=15,

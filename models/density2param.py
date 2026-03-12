@@ -351,9 +351,9 @@ def fit_density_2param(df: pd.DataFrame,
 
     _all_nested = {
         "atan":  {"atan": 0, "log": 0},
-        "log":   {"log": 0, "atan": 0, "log1p": 0},
+        "log":   {"log": 0, "atan": 0, "log1p": 0, "exp": 0},
         "log1p": {"log1p": 0},
-        "sqrt":  {"log": 0},
+        "sqrt":  {"sqrt": 0, "log": 0, "exp": 0},
         "exp":   {"exp": 0},
     }
     _nested = {k: {ki: vi for ki, vi in v.items() if ki in _unary}
@@ -476,7 +476,7 @@ if __name__ == "__main__":
     os.makedirs("outputs/SPARC/stage7_phys_constrained", exist_ok=True)
     fit_density_2param(
         df,
-        output_directory="outputs/SPARC/stage7_phys_constrained",
+        output_directory="outputs/SPARC/production/density",
         error_weighting=True,
         iterations=99999,
         n_galaxies=None,
@@ -493,7 +493,7 @@ if __name__ == "__main__":
         nu_t=3.0,
         n_irls=3,
         min_points=5,
-        unary_operators=["sqrt", "log", "log1p", "exp"],
+        unary_operators=["sqrt", "log", "exp"],
         weight_spos=0.1,
         weight_inner_slope=0.1,
         n_gamma_refine=5,
