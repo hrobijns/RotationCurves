@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
@@ -7,13 +7,27 @@ name = "sparc-sr"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    # Symbolic regression — pinned to exact commit used for production runs
+    # (PySR 2.0.0a2, SymbolicRegression.jl v2.0.0-alpha.9, Julia 1.10.x)
+    "pysr @ git+https://github.com/MilesCranmer/PySR.git@1e18b9a34cd8971d1a18fcc690a85f050ddbe728",
+
+    # Core numerics
     "numpy==2.3.4",
     "pandas==2.3.3",
     "scipy==1.16.3",
-    "matplotlib==3.10.7",
-    "scikit-learn==1.7.2",
     "sympy==1.14.0",
-    "emcee==3.1.6",
+
+    # Julia bridge (pinned so Julia env resolves identically)
+    "juliacall==0.9.28",
+    "juliapkg==0.1.22",
+
+    # Data / analysis
+    "scikit-learn==1.7.2",
     "astropy==7.2.0",
-    "pysr @ git+https://github.com/MilesCranmer/PySR.git",  # v2.0.0a2
+    "emcee==3.1.6",
+    "pyarrow==21.0.0",
+
+    # Plotting
+    "matplotlib==3.10.7",
+    "seaborn==0.13.2",
 ]
