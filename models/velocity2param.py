@@ -288,9 +288,15 @@ def fit_vr_2param(df: pd.DataFrame,
         if op in active_unary
     }
 
+    import glob as _glob, os as _os
+    _ckpts = _glob.glob(_os.path.join(output_directory, "*/checkpoint.pkl"))
+    _run_id = _os.path.basename(_os.path.dirname(max(_ckpts, key=_os.path.getmtime))) if _ckpts else None
+
     model = PySRRegressor(
         expression_spec=template,
         output_directory=output_directory,
+        warm_start=True,
+        run_id=_run_id,
         niterations=iterations,
         binary_operators=["*", "/", "-", "+"],
         unary_operators=active_unary,
@@ -340,5 +346,5 @@ if __name__ == "__main__":
         n_irls=3,
         min_points=5,
         unary_operators=["atan", "log", "sqrt", "log1p"],
-        maxsize=18,
+        maxsize=22,
     )

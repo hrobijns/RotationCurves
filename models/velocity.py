@@ -255,7 +255,7 @@ def fit_vr_inner_opt(df: pd.DataFrame,
         "atan":  {"atan": 0, "log": 0},
         "log":   {"log": 0, "atan": 0, "log1p": 0},
         "log1p": {"log1p": 0},
-        "sqrt":  {"log": 0},
+        "sqrt":  {"sqrt": 0, "log": 0, "atan": 0, "log1p": 0},
     }
     nested = {
         op: {t: d for t, d in targets.items() if t in active_unary}
@@ -263,9 +263,16 @@ def fit_vr_inner_opt(df: pd.DataFrame,
         if op in active_unary
     }
 
+    # Resume from the most recent checkpoint if one exists.
+    import glob as _glob, os as _os
+    _ckpts = _glob.glob(_os.path.join(output_directory, "*/checkpoint.pkl"))
+    _run_id = _os.path.basename(_os.path.dirname(max(_ckpts, key=_os.path.getmtime))) if _ckpts else None
+
     model = PySRRegressor(
         expression_spec=template,
         output_directory=output_directory,
+        warm_start=True,
+        run_id=_run_id,
         niterations=iterations,
         binary_operators=["*", "/", "-", "+"],
         unary_operators=active_unary,
@@ -361,13 +368,13 @@ if __name__ == "__main__":
     df = produce_SPARC_df("data/SPARC", quality=1)
     fit_vr_inner_opt(
         df,
-        output_directory="outputs/SPARC/stage8_velocity",
+        output_directory="outputs/SPARC/production/velocity1param",
         error_weighting=True,
         iterations=99999,
         n_galaxies=None,   # use all Q=1 galaxies
         n_d_grid=30,
-        n_d_refine=20,
-        populations=15,
+        n_d_refine=10,
+        populations=20,
         population_size=40,
         ncycles_per_iteration=100,
         weight_optimize=0.1,

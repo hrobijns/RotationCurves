@@ -359,14 +359,20 @@ def fit_density_2param(df: pd.DataFrame,
     _nested = {k: {ki: vi for ki, vi in v.items() if ki in _unary}
                for k, v in _all_nested.items() if k in _unary}
 
+    import glob as _glob, os as _os
+    _ckpts = _glob.glob(_os.path.join(output_directory, "*/checkpoint.pkl"))
+    _run_id = _os.path.basename(_os.path.dirname(max(_ckpts, key=_os.path.getmtime))) if _ckpts else None
+
     model = PySRRegressor(
         expression_spec=template,
         output_directory=output_directory,
+        warm_start=True,
+        run_id=_run_id,
         niterations=iterations,
         binary_operators=["*", "/", "-", "+"],
         unary_operators=_unary,
         nested_constraints=_nested,
-        maxsize=18,
+        maxsize=22,
         populations=populations,
         population_size=population_size,
         ncycles_per_iteration=ncycles_per_iteration,
