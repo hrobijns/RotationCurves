@@ -25,7 +25,9 @@ def fit_vr_2param(df: pd.DataFrame,
                   n_irls: int = 3,
                   min_points: int = 5,
                   unary_operators: list = None,
-                  maxsize: int = 18):
+                  maxsize: int = 18,
+                  timeout_in_seconds: float | None = None,
+                  run_id: str | None = None):
     """
     2D symbolic regression: learn f(r/d, γ) where γ is a per-galaxy shape parameter
     optimised jointly with scale radius d.
@@ -288,15 +290,11 @@ def fit_vr_2param(df: pd.DataFrame,
         if op in active_unary
     }
 
-    import glob as _glob, os as _os
-    _ckpts = _glob.glob(_os.path.join(output_directory, "*/checkpoint.pkl"))
-    _run_id = _os.path.basename(_os.path.dirname(max(_ckpts, key=_os.path.getmtime))) if _ckpts else None
-
     model = PySRRegressor(
         expression_spec=template,
         output_directory=output_directory,
         warm_start=True,
-        run_id=_run_id,
+        run_id=run_id,
         niterations=iterations,
         binary_operators=["*", "/", "-", "+"],
         unary_operators=active_unary,
@@ -309,6 +307,7 @@ def fit_vr_2param(df: pd.DataFrame,
         optimizer_iterations=optimizer_iterations,
         batching=False,
         complexity_of_constants=3,
+        timeout_in_seconds=timeout_in_seconds,
         loss_function_expression=inner_opt_loss,
     )
 
@@ -324,10 +323,11 @@ if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from datawrangling import produce_SPARC_df
+
     df = produce_SPARC_df("data/SPARC", quality=1)
     fit_vr_2param(
         df,
-        output_directory="outputs/SPARC/production/velocity",
+        output_directory="outputs/SPARC/production/velocity2param",
         iterations=99999,
         n_galaxies=None,
         n_d_grid=15,
@@ -346,5 +346,7 @@ if __name__ == "__main__":
         n_irls=3,
         min_points=5,
         unary_operators=["atan", "log", "sqrt", "log1p"],
-        maxsize=22,
+        maxsize=25,
+        timeout_in_seconds=10 * 3600,  # allows ~2h for Julia compilation within a 12h job
+        run_id="adil",
     )

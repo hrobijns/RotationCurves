@@ -21,7 +21,9 @@ def fit_vr_inner_opt(df: pd.DataFrame,
                      n_irls: int = 3,
                      min_points: int = 5,
                      unary_operators: list = None,
-                     maxsize: int = 22):
+                     maxsize: int = 22,
+                     timeout_in_seconds: float | None = None,
+                     run_id: str | None = None):
     """
     Symbolic regression for galaxy rotation curves using per-expression inner
     optimisation: for each candidate symbolic form f, the per-galaxy parameters
@@ -263,16 +265,11 @@ def fit_vr_inner_opt(df: pd.DataFrame,
         if op in active_unary
     }
 
-    # Resume from the most recent checkpoint if one exists.
-    import glob as _glob, os as _os
-    _ckpts = _glob.glob(_os.path.join(output_directory, "*/checkpoint.pkl"))
-    _run_id = _os.path.basename(_os.path.dirname(max(_ckpts, key=_os.path.getmtime))) if _ckpts else None
-
     model = PySRRegressor(
         expression_spec=template,
         output_directory=output_directory,
         warm_start=True,
-        run_id=_run_id,
+        run_id=run_id,
         niterations=iterations,
         binary_operators=["*", "/", "-", "+"],
         unary_operators=active_unary,
@@ -288,6 +285,7 @@ def fit_vr_inner_opt(df: pd.DataFrame,
         optimizer_iterations=optimizer_iterations,
         batching=False,
         complexity_of_constants = 3,
+        timeout_in_seconds=timeout_in_seconds,
         loss_function_expression=inner_opt_loss,
     )
 
@@ -362,13 +360,26 @@ if __name__ == "__main__":
     # Uses Student-t(ν=3) likelihood + log-normal priors on upsilons, matching
     # mcmc_fit.py.  Expanded operator set (log, sqrt, exp, log1p) allows the
     # search to find any profile shape, not just the pISO atan family.
-    import sys, os
+    import sys, os, glob
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from datawrangling import produce_SPARC_df
+
+    _output_dir = "outputs/SPARC/production/velocity1param"
+
+    def _find_latest_run_id(output_dir):
+        """Return the run_id whose checkpoint.pkl was most recently written, or None."""
+        checkpoints = glob.glob(os.path.join(output_dir, "*", "checkpoint.pkl"))
+        if not checkpoints:
+            return None
+        return os.path.basename(os.path.dirname(max(checkpoints, key=os.path.getmtime)))
+
+    # Manual override via argv (e.g. for debugging); otherwise auto-detect last checkpoint.
+    _resume_id = sys.argv[1] if len(sys.argv) > 1 else _find_latest_run_id(_output_dir)
+
     df = produce_SPARC_df("data/SPARC", quality=1)
     fit_vr_inner_opt(
         df,
-        output_directory="outputs/SPARC/production/velocity1param",
+        output_directory=_output_dir,
         error_weighting=True,
         iterations=99999,
         n_galaxies=None,   # use all Q=1 galaxies
@@ -386,4 +397,6 @@ if __name__ == "__main__":
         min_points=5,
         unary_operators=["atan", "log", "sqrt", "log1p"],   # no exp: origin penalty kills it
         maxsize=22,
+        timeout_in_seconds=10.5 * 3600,  # allows ~1.5h for Julia compilation within a 12h job
+        run_id=_resume_id,
     )

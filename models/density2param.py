@@ -27,7 +27,9 @@ def fit_density_2param(df: pd.DataFrame,
                        weight_spos: float = 0.1,
                        weight_inner_slope: float = 0.1,
                        n_d_refine: int = 10,
-                       n_gamma_refine: int = 5):
+                       n_gamma_refine: int = 5,
+                       timeout_in_seconds: float | None = None,
+                       run_id: str | None = None):
     """
     Two-parameter symbolic regression for galaxy rotation curves: learns the DM
     logarithmic density slope s(x, γ) = -d ln ρ / d ln r, where x = r/d and γ
@@ -310,6 +312,15 @@ def fit_density_2param(df: pd.DataFrame,
             end
             X_eval[2, :] .= best_gamma   # restore
 
+            # ---- Second d-refinement at updated best_gamma (alternating pass) ----
+            # γ-refinement may have shifted best_gamma, so re-scan d at the new γ.
+            lo_ref = max(log(T(0.05)), best_log_d - Δlog)
+            hi_ref = min(log(T(500.0)), best_log_d + Δlog)
+            for log_d in range(lo_ref, hi_ref; length={n_d_refine})
+                c = eval_candidate_g(log_d)
+                if c < best_g; best_g = c; best_log_d = log_d; end
+            end
+
             # ---- Physics penalties at optimal (d, γ) ----
             # Evaluated at 7 fixed x = r/d test points.
             # Slope positivity: penalise s < 0 (density increasing outward).
@@ -342,36 +353,25 @@ def fit_density_2param(df: pd.DataFrame,
         combine="f(r, gamma)",   # display: log-slope s(r/d, γ); h recovered by integration
     )
 
-    # Default operators: include log so the SR can build x^γ via exp(γ·log(x)).
-    # Without log, γ can only enter as a multiplicative rescaling (e.g. γ/(γ+x²) = pISO
-    # at d_eff=d/√γ), which adds no new physics. With log, Einasto-type exp(-x^γ) and
-    # gNFW-type x^{-γ}/(1+x)^{3-γ} become discoverable.
-    _unary = unary_operators if unary_operators is not None else \
-             ["sqrt", "log", "log1p", "exp"]
-
-    _all_nested = {
-        "atan":  {"atan": 0, "log": 0},
-        "log":   {"log": 0, "atan": 0, "log1p": 0, "exp": 0},
-        "log1p": {"log1p": 0},
-        "sqrt":  {"sqrt": 0, "log": 0, "exp": 0},
-        "exp":   {"exp": 0},
-    }
-    _nested = {k: {ki: vi for ki, vi in v.items() if ki in _unary}
-               for k, v in _all_nested.items() if k in _unary}
-
-    import glob as _glob, os as _os
-    _ckpts = _glob.glob(_os.path.join(output_directory, "*/checkpoint.pkl"))
-    _run_id = _os.path.basename(_os.path.dirname(max(_ckpts, key=_os.path.getmtime))) if _ckpts else None
+    # Operators: algebraic arithmetic + power law (x^γ, x^2, x^0.5 etc.).
+    # exp/log excluded to prevent exp-family from dominating (as in all prior stages).
+    # sqrt kept as a cheap unary path to x^0.5.
+    # ^ added as binary with constraints={"^": (-1, 1)} so the exponent must be a
+    # single node (constant or variable like γ) — blocks x^(γ+1) etc.
+    # complexity_of_constants left at default (1) so that constraints={"^":(-1,1)}
+    # admits both constants and single variables on the right of ^.
+    _unary = unary_operators if unary_operators is not None else ["sqrt"]
 
     model = PySRRegressor(
         expression_spec=template,
         output_directory=output_directory,
         warm_start=True,
-        run_id=_run_id,
+        run_id=run_id,
         niterations=iterations,
-        binary_operators=["*", "/", "-", "+"],
+        binary_operators=["*", "/", "-", "+", "^"],
         unary_operators=_unary,
-        nested_constraints=_nested,
+        nested_constraints={"sqrt": {"sqrt": 0}},
+        constraints={"^": (-1, 1)},
         maxsize=22,
         populations=populations,
         population_size=population_size,
@@ -379,7 +379,7 @@ def fit_density_2param(df: pd.DataFrame,
         weight_optimize=weight_optimize,
         optimizer_iterations=optimizer_iterations,
         batching=False,
-        complexity_of_constants=3,
+        timeout_in_seconds=timeout_in_seconds,
         loss_function_expression=inner_opt_loss,
         guesses=guesses,
         fraction_replaced_guesses=fraction_replaced_guesses,
@@ -472,17 +472,11 @@ if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from datawrangling import produce_SPARC_df
-    df = produce_SPARC_df("data/SPARC", quality=1)
 
-    # ---- Stage 7 production: 99 Q=1 galaxies, physics-constrained ----
-    # Monotonicity + non-negativity penalties steer SR away from unphysical
-    # peaked density forms (pathology of Stage 6).
-    # Test points include x=0.01 to close the small-γ loophole.
-    # Expected runtime: ~3–4 days.
-    os.makedirs("outputs/SPARC/stage7_phys_constrained", exist_ok=True)
+    df = produce_SPARC_df("data/SPARC", quality=1)
     fit_density_2param(
         df,
-        output_directory="outputs/SPARC/production/density",
+        output_directory="outputs/SPARC/production/density2param",
         error_weighting=True,
         iterations=99999,
         n_galaxies=None,
@@ -499,8 +493,10 @@ if __name__ == "__main__":
         nu_t=3.0,
         n_irls=3,
         min_points=5,
-        unary_operators=["sqrt", "log", "exp"],
+        unary_operators=None,
         weight_spos=0.1,
         weight_inner_slope=0.1,
         n_gamma_refine=5,
+        timeout_in_seconds=9.5 * 3600,  # allows ~2.5h for Julia compilation within a 12h job
+        run_id="adil",
     )
